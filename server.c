@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <sys/select.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -353,7 +354,7 @@ get_stat(struct hero *h)
  * 3: arg2
  * */
 int
-cmd(char *buf, int n, struct hero *h)
+cmd(char *buf, int n, struct hero *h, int turn)
 {
 	char cmd;
 	unsigned arg1;
@@ -370,14 +371,20 @@ cmd(char *buf, int n, struct hero *h)
 	switch (cmd) {
 	/* push soldier */
 	case 1:
+		if (turn == 0) // not our turn.
+			return 0;
 		h->push_soldier(h, arg1 - 1, arg2 - 1);
 		break;
 	/* attack */
 	case 2:
+		if (turn == 0)
+			return 0;
 		ret = h->attack(h, arg1, arg2);
 		break;
 	/* turn over */
 	case 3:
+		if (turn == 0)
+			return 0;
 		ret = 2;
 		break;
 	/* print */
@@ -433,8 +440,10 @@ begin()
 	int n, ret;
 	char buf[1000];
 	struct hero *h;
-	h = &heros[0];
+	struct fd_set rfds;
+	int max_fd;
 	int i;
+	h = &heros[0];
 	for (i = 0; i < 3; i++)
 		h->get_card(h);
 	h = &heros[1];
@@ -445,34 +454,59 @@ begin()
 	h->power ++;
 	notify_client_turn();
 	printf("--begin--\n");
+	max_fd = sock[0] > sock[1] ? sock[0] : sock[1];
 	while (1) {
 again:
+		FD_ZERO(&rfds);
+		FD_SET(sock[0], &rfds);
+		FD_SET(sock[1], &rfds);
 		//get_stat(h);
-		n = read(sock[turn & 0x1], buf, sizeof(buf));
-		if (n < 0) {
-			if (errno == EAGAIN || errno == EWOULDBLOCK)
+		//n = read(sock[turn & 0x1], buf, sizeof(buf));
+		
+		ret = select(max_fd + 1, &rfds, NULL, NULL, NULL);
+		if (ret < 0) {
+			if (errno == EAGAIN)
 				goto again;
-		}
-		ret = cmd(buf, n, h);
-		if (ret == 1) { /*game over*/
-			break;
-		} else if (ret == 2) {
-			turn++;
-			do {
-				setnonblock(sock[turn & 0x1]);
-				n = read(sock[(turn & 0x1)], buf, sizeof(buf));
-			} while (n == sizeof(buf));
-			setblock(sock[turn & 0x1]);
-			h = &heros[turn & 0x1];
-			h->get_card(h);
-			if (h->power < 10)
-				h->power++;
-			for (i = 0; i < 7; i++) {
-				if (h->battle_soldier[i] != NULL)
-					h->battle_soldier[i]->can_attack = 1;
+			else goto again;
+		} else {
+			if (FD_ISSET(sock[0], &rfds)) {
+				n = read(sock[0], buf, sizeof(buf));
+				ret = cmd(buf, n, &heros[0], ~(0^(turn&0x1)));
+				if (ret == 1) { /*game over*/
+					break;
+				} else if (ret == 2) {
+					turn++;
+					h = &heros[turn & 0x1];
+					h->get_card(h);
+					if (h->power < 10)
+						h->power++;
+					for (i = 0; i < 7; i++) {
+						if (h->battle_soldier[i] != NULL)
+							h->battle_soldier[i]->can_attack = 1;
+					}
+					notify_client_turn();
+					goto again;
+				}
 			}
-			notify_client_turn();
-			goto again;
+			if (FD_ISSET(sock[1], &rfds)) {
+				n = read(sock[1], buf, sizeof(buf));
+				ret = cmd(buf, n, &heros[1], ~(1^(turn&0x1)));
+				if (ret == 1) { /*game over*/
+					break;
+				} else if (ret == 2) {
+					turn++;
+					h = &heros[turn & 0x1];
+					h->get_card(h);
+					if (h->power < 10)
+						h->power++;
+					for (i = 0; i < 7; i++) {
+						if (h->battle_soldier[i] != NULL)
+							h->battle_soldier[i]->can_attack = 1;
+					}
+					notify_client_turn();
+					goto again;
+				}
+			}
 		}
 	}
 }
