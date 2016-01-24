@@ -23,6 +23,10 @@ parse_cmd(char *buf, int len) {
 	else if (cmd == 5) {
 		printf("%s\n%s", buf+2, prompt);
 		fflush(stdout);
+	} else if (cmd == 9) {
+		printf("Win!\n");
+	} else if (cmd == 8) {
+		printf("Lose!\n");
 	}
 	return 0;
 }

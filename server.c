@@ -162,28 +162,27 @@ print_hero(struct hero *h, char *str)
 }
 
 int
-print_battlefield(char *str)
+print_battlefield(struct hero *h1, struct hero *h2, char *str)
 {
 	int i, n;
 	char *buf = str;
-	struct hero *h1 = &heros[0];
-	struct hero *h2 = &heros[1];
-	n = sprintf(buf, "==================================================================\n");
+	n = sprintf(buf, "===========================================================\n");
 	buf += n;
-	n = sprintf(buf, "|  NO. |  HP  |  ATK | CATK | ---->  <---- |  HP  |  ATK | CATK |\n");
+	n = sprintf(buf, "|  HP  |  ATK | CATK | ---> NO. <--- |  HP  |  ATK | CATK |\n");
 	buf += n;
 	for (i = 0; i < 7; i++) {
-		n = sprintf(buf, "|  %2d  |  %3d |  %3u |  %2u  | ---->  <---- |  %3d |  %3u |  %2u  |\n",
-		       i+1, h1->battle_soldier[i] == NULL ? 0 : h1->battle_soldier[i]->hp,
+		n = sprintf(buf, "|  %3d |  %3u |  %2u  | --->  %1d  <--- |  %3d |  %3u |  %2u  |\n",
+		       h1->battle_soldier[i] == NULL ? 0 : h1->battle_soldier[i]->hp,
 		       h1->battle_soldier[i] == NULL ? 0 : h1->battle_soldier[i]->attack_force,
 		       h1->battle_soldier[i] == NULL ? 0 : h1->battle_soldier[i]->can_attack,
+		       i + 1,
 		       h2->battle_soldier[i] == NULL ? 0 : h2->battle_soldier[i]->hp,
 		       h2->battle_soldier[i] == NULL ? 0 : h2->battle_soldier[i]->attack_force,
 		       h2->battle_soldier[i] == NULL ? 0 : h2->battle_soldier[i]->can_attack
 		       );
 		buf += n;
 	}
-	n = sprintf(buf, "==================================================================\n");
+	n = sprintf(buf, "===========================================================\n");
 	buf += n;
 	return buf-str;
 }
@@ -215,12 +214,38 @@ print_stat(struct hero *h, int *len)
 {
 	int n;
 	char *buf = statbuf;
+	struct hero *oh = get_other_hero(h);
+	int t = (h - oh + 1)/2;
+
 	buf[0] = 0;
 	buf[1] = 5;
-	buf += 2;
+	buf[2] = '\n';
+	buf += 3;
 	n = print_hero(h, buf);
 	buf += n;
-	n = print_battlefield(buf);
+	if ((turn & 0x1) == t) {
+		buf--;
+		buf[0] = ' ';
+		buf[1] = '<';
+		buf[2] = '-';
+		buf[3] = '-';
+		buf[4] = '-';
+		buf[5] = '\n';
+		buf += 6;
+	}
+	n = print_hero(oh, buf);
+	buf += n;
+	if ((turn & 0x1) != t) {
+		buf--;
+		buf[0] = ' ';
+		buf[1] = '<';
+		buf[2] = '-';
+		buf[3] = '-';
+		buf[4] = '-';
+		buf[5] = '\n';
+		buf += 6;
+	}
+	n = print_battlefield(h, oh, buf);
 	buf += n;
 	n = print_handcard(h, buf);
 	*len = buf + n - statbuf;
@@ -231,11 +256,16 @@ void
 send_game_result()
 {
 	int i;
+	char buf[4];
+	buf[0] = 0;
 	for (i = 0; i < 2; i++) {
-		if (heros[i].hp <= 0)
-			printf("Lose %d\n", i+1);
-		else
-			printf("Win %d\n", i+1);
+		if (heros[i].hp <= 0) {
+			buf[1] = 8;
+			write(sock[i], buf, 4);
+		} else {
+			buf[1] = 9;
+			write(sock[i], buf, 4);
+		}
 	}
 }
 void
@@ -328,7 +358,7 @@ init_hero(int n)
 {
 	struct hero *h = &heros[n];
 	h->hp = 30;
-	h->max_power = 10;
+	h->max_power = 0;
 	card_lib_init(&h->cl);
 	h->get_card = get_card;
 	h->push_soldier = push_soldier;
@@ -451,7 +481,8 @@ begin()
 		h->get_card(h);
 	h = &heros[turn & 0x1];
 	h->get_card(h);
-	h->power ++;
+	h->max_power ++;
+	h->power = h->max_power;
 	notify_client_turn();
 	printf("--begin--\n");
 	max_fd = sock[0] > sock[1] ? sock[0] : sock[1];
@@ -471,15 +502,16 @@ again:
 		} else {
 			if (FD_ISSET(sock[0], &rfds)) {
 				n = read(sock[0], buf, sizeof(buf));
-				ret = cmd(buf, n, &heros[0], ~(0^(turn&0x1)));
+				ret = cmd(buf, n, &heros[0], 1-(0^(turn&0x1)));
 				if (ret == 1) { /*game over*/
 					break;
 				} else if (ret == 2) {
 					turn++;
 					h = &heros[turn & 0x1];
 					h->get_card(h);
-					if (h->power < 10)
-						h->power++;
+					if (h->max_power < 10)
+						h->max_power++;
+					h->power = h->max_power;
 					for (i = 0; i < 7; i++) {
 						if (h->battle_soldier[i] != NULL)
 							h->battle_soldier[i]->can_attack = 1;
@@ -490,15 +522,16 @@ again:
 			}
 			if (FD_ISSET(sock[1], &rfds)) {
 				n = read(sock[1], buf, sizeof(buf));
-				ret = cmd(buf, n, &heros[1], ~(1^(turn&0x1)));
+				ret = cmd(buf, n, &heros[1], 1-(1^(turn&0x1)));
 				if (ret == 1) { /*game over*/
 					break;
 				} else if (ret == 2) {
 					turn++;
 					h = &heros[turn & 0x1];
 					h->get_card(h);
-					if (h->power < 10)
-						h->power++;
+					if (h->max_power < 10)
+						h->max_power++;
+					h->power = h->max_power;
 					for (i = 0; i < 7; i++) {
 						if (h->battle_soldier[i] != NULL)
 							h->battle_soldier[i]->can_attack = 1;
