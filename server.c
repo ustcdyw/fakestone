@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <ctype.h>
 #include <sys/select.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -13,12 +14,12 @@
 
 #define CARDMAX 30
 
-enum soldier_state {
+
+enum card_state {
 	CARD_LIB = 0,
 	HAND,
 	BATTLEFILED,
 };
-
 /*
 static void
 print_soldier(struct soldier *s)
@@ -36,7 +37,6 @@ struct soldier {
 	unsigned attack_force;
 	unsigned can_attack;
 	unsigned power;
-	enum soldier_state state;
 	// int (*attack)(int );
 	// void (*print_stat)(struct soldier * );
 };
@@ -53,6 +53,7 @@ struct card {
 		struct soldier soldier;
 		struct spell spell;
 	};
+	enum card_state state;
 	enum card_type type;
 };
 
@@ -65,12 +66,20 @@ struct card_lib {
 struct card *
 get_next_card(struct card_lib *cl)
 {
-	if (cl->next_card >= CARDMAX) {
-		cl->next_card++;
+	int n;
+	int i;
+	cl->next_card++;
+	if (cl->next_card > CARDMAX) {
 		return NULL;
 	}
-	
-	return &cl->cards[cl->next_card++];
+	n = rand()%30;
+	for (i = n; i < 30; i++) {
+		if (cl->cards[i].state == CARD_LIB) {
+			cl->cards[i].state = HAND;
+			return &cl->cards[i];
+		}
+	}
+	return NULL;
 }
 
 struct hero {
@@ -97,7 +106,9 @@ struct hero {
 };
 
 static int turn;
+static char statbuf[5000];
 static int sock[2];
+static struct hero heros[2];
 
 void
 get_card(struct hero *h)
@@ -130,6 +141,7 @@ push_soldier(struct hero *h, unsigned hand_pos, unsigned battle_pos)
 	s = &h->hand_cards[hand_pos]->soldier;
 	if (h->power < s->power)
 		return;
+	h->hand_cards[hand_pos]->state = BATTLEFILED;
 	h->battle_soldier[battle_pos] = &h->hand_cards[hand_pos]->soldier;
 	h->hand_cards[hand_pos] = NULL;
 	if (hand_pos < h->n_hand_cards-1) {
@@ -143,7 +155,6 @@ push_soldier(struct hero *h, unsigned hand_pos, unsigned battle_pos)
 	h->n_hand_cards--;
 }
 
-static struct hero heros[2];
 struct hero *
 get_other_hero(struct hero *h)
 {
@@ -208,7 +219,6 @@ print_handcard(struct hero *h, char *str)
 	return buf-str;
 }
 
-char statbuf[5000];
 char *
 print_stat(struct hero *h, int *len)
 {
@@ -308,8 +318,9 @@ attack(struct hero *h, unsigned our_pos, unsigned opponent_pos)
 				return 0;
 			h->hp -= other_s->attack_force;
 			other_s->hp -= h->attack_force;
-			if (other_s->hp <= 0)
+			if (other_s->hp <= 0) {
 				other->battle_soldier[opponent_pos-1] = NULL;
+			}
 		}
 		h->can_attack --;
 	} else {
@@ -332,37 +343,108 @@ attack(struct hero *h, unsigned our_pos, unsigned opponent_pos)
 	return checkover();
 }
 
-void
-soldier_init(struct soldier *s, int hp, int atk, int pow)
+int
+soldier_init(struct soldier *s, int pow, int atk, int hp)
 {
+	if (atk + hp > 2*pow+1 || pow < 0 || atk < 0 || hp <= 0) {
+		return -1;
+	}
 	s->hp = hp;
 	s->attack_force = atk;
 	s->power = pow;
+	return 0;
 }
 /*
  * XXX this should init from client.
  * */
 
-void
-card_lib_init(struct card_lib *cl)
+int
+card_lib_init(struct card_lib *cl, char *buf, int nb)
 {
-	int i;
+	int i, card_num = 0;
+	unsigned n[3];
+	char *cur = buf;
+	char *ret;
+	char *token;
+	char *endptr;
+	int err = 0;
+	char t;
 	cl->get_next_card = get_next_card;
-	for (i = 0; i < CARDMAX; i++) {
-		soldier_init(&cl->cards[i].soldier, i%8 + 1, i%8 + 1, i%8 + 1);
+	while (cur) {
+		if (card_num >= 30)
+			break;
+		ret = strstr(cur, "\n");
+		if (ret == NULL) {
+			if (cur < buf + nb)
+				ret = buf + nb;
+			else {
+				err = 1;
+				break;
+			}
+		}
+		*ret = '\0';
+		i = 0;
+		if (cur == NULL) {
+			err = 1;
+			break;
+		}
+		token = strtok(cur, " \t");
+		if (token == NULL) {
+			err = 1;
+			break;
+		}
+		n[i] = atoi(token);
+		while (1) {
+			i++;
+			token = strtok(NULL, " \t");
+			if (token == NULL) {
+				if (i != 3)
+					err = 1;
+				break;
+			}
+			n[i] = atoi(token);
+		}
+		if (err == 1)
+			break;
+		if (soldier_init(&cl->cards[card_num++].soldier, n[0], n[1], n[2]) < 0) {
+			err = 1;
+			break;
+		}
+		cur = ret + 1;
+		if (cur >= (buf+nb))
+			break;
 	}
+	if (card_num != 30)
+		err = 1;
+	return -err;
 }
 
-void
+int
 init_hero(int n)
 {
 	struct hero *h = &heros[n];
+	int fd = sock[n];
+	int nb;
+	char buf[4] = {0, 6, 0, 0};
+
 	h->hp = 30;
 	h->max_power = 0;
-	card_lib_init(&h->cl);
 	h->get_card = get_card;
 	h->push_soldier = push_soldier;
 	h->attack = attack;
+
+	do {
+		nb = write(fd, buf, 4);
+	} while (nb != 4);
+	nb = read(fd, statbuf, sizeof(statbuf));
+	statbuf[nb] = '\0';
+	int i;
+	printf("nb: %d\n", nb);
+	for (i = 0; i < nb; i++)
+	{
+		printf("%c", statbuf[i]);
+	}
+	return card_lib_init(&h->cl, statbuf, nb);
 }
 
 
@@ -464,15 +546,29 @@ setnonblock(int fd)
 	}
 }
 
+int
+send_notify(int fd, char *buf, int len)
+{
+	char sendbuf[len + 5];
+	sendbuf[0] = 0;
+	sendbuf[1] = 5;
+	memcpy(&sendbuf[2], buf, len);
+	sendbuf[len+2] = '\0';
+	return write(fd, sendbuf, len + 3);
+}
+
 void
 begin()
 {
 	int n, ret;
 	char buf[1000];
 	struct hero *h;
-	struct fd_set rfds;
+	fd_set rfds;
 	int max_fd;
 	int i;
+	struct timeval tv;
+	tv.tv_sec = 90;
+	tv.tv_usec = 0;
 	h = &heros[0];
 	for (i = 0; i < 3; i++)
 		h->get_card(h);
@@ -494,11 +590,26 @@ again:
 		//get_stat(h);
 		//n = read(sock[turn & 0x1], buf, sizeof(buf));
 		
-		ret = select(max_fd + 1, &rfds, NULL, NULL, NULL);
+		ret = select(max_fd + 1, &rfds, NULL, NULL, &tv);
 		if (ret < 0) {
 			if (errno == EAGAIN)
 				goto again;
 			else goto again;
+		} else if (ret == 0) {
+			// timeout.
+			send_notify(sock[turn & 0x1], "Timeout", sizeof("Timeout"));
+			turn ++;
+			h = &heros[turn & 0x1];
+			h->get_card(h);
+			if (h->max_power < 10)
+				h->max_power++;
+			h->power = h->max_power;
+			for (i = 0; i < 7; i++) {
+				if (h->battle_soldier[i] != NULL)
+					h->battle_soldier[i]->can_attack = 1;
+			}
+			notify_client_turn();
+			goto again;
 		} else {
 			if (FD_ISSET(sock[0], &rfds)) {
 				n = read(sock[0], buf, sizeof(buf));
@@ -551,6 +662,7 @@ main(int argc, char *argv[])
 	int servfd, newfd;
 	struct sockaddr_in sin;
 	int i;
+	int ret;
 	socklen_t addrlen;
 	servfd = socket(PF_INET, SOCK_STREAM, 0);
 	if (servfd < 0) {
@@ -590,8 +702,10 @@ main(int argc, char *argv[])
 	}
 	//setnonblock(sock[0]);
 	//setnonblock(sock[1]);
-	init_hero(0);
-	init_hero(1);
-	begin();
-	return 0;
+	srand((unsigned)time(NULL));
+	ret = init_hero(0);
+	ret = init_hero(1);
+	if (ret == 0)
+		begin();
+	return ret;
 }
