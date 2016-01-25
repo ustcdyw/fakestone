@@ -567,8 +567,6 @@ begin()
 	int max_fd;
 	int i;
 	struct timeval tv;
-	tv.tv_sec = 90;
-	tv.tv_usec = 0;
 	h = &heros[0];
 	for (i = 0; i < 3; i++)
 		h->get_card(h);
@@ -587,6 +585,8 @@ again:
 		FD_ZERO(&rfds);
 		FD_SET(sock[0], &rfds);
 		FD_SET(sock[1], &rfds);
+		tv.tv_sec = 90;
+		tv.tv_usec = 0;
 		//get_stat(h);
 		//n = read(sock[turn & 0x1], buf, sizeof(buf));
 		
