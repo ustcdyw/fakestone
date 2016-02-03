@@ -182,6 +182,7 @@ recv_routine(void *arg)
 	}
 	close(fd);
 	printf("Recv routine failed\n");
+	return NULL;
 }
 int
 main(int argc, char *argv[])

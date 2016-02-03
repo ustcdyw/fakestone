@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <ctype.h>
 #include <sys/select.h>
+#include <time.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/types.h>
